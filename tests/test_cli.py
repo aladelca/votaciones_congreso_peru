@@ -5,6 +5,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from congreso_votaciones import cli
+from congreso_votaciones.manifest import ManifestLoadError
 from congreso_votaciones.models import CommandSummary, ServiceResult
 
 runner = CliRunner()
@@ -56,6 +57,23 @@ def test_download_cli_returns_configuration_error(monkeypatch, tmp_path) -> None
 
     assert result.exit_code == 2
     assert "configuration-error:" in result.stderr
+
+
+def test_download_cli_surfaces_manifest_load_error(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    def fake_download(*args, **kwargs):  # type: ignore[no-untyped-def]
+        del args, kwargs
+        raise ManifestLoadError(
+            path=tmp_path / "data" / "manifests" / "pleno_pdfs_index.jsonl",
+            detail="payload invalido para ManifestRecord",
+            line_number=3,
+        )
+
+    monkeypatch.setattr(cli, "download_pleno", fake_download)
+    result = runner.invoke(cli.app, ["download-pleno", "--output-root", str(tmp_path / "data")])
+
+    assert result.exit_code == 1
+    assert "error: Manifiesto JSONL invalido" in result.stderr
+    assert "manifiesto canonico" in result.stderr
 
 
 def test_sync_cli_propagates_service_exit_code(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]

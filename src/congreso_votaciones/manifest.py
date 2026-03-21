@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import csv
 import json
+import os
+from collections.abc import Callable
 from pathlib import Path
+from tempfile import NamedTemporaryFile
+from typing import Any, Protocol
 
 from congreso_votaciones.download import build_storage_relpath, is_valid_pdf_file
 from congreso_votaciones.models import DownloadResult, ManifestRecord, PlenoPdfRecord
@@ -34,6 +38,42 @@ MANIFEST_FIELDS = [
     "downloaded_at",
     "error_message",
 ]
+
+
+class ManifestLoadError(ValueError):
+    def __init__(
+        self,
+        *,
+        path: Path,
+        detail: str,
+        line_number: int | None = None,
+    ) -> None:
+        self.path = path
+        self.detail = detail
+        self.line_number = line_number
+        self.recovery_hint = (
+            "El JSONL es el manifiesto canonico; corrige o reemplaza este archivo y "
+            "vuelve a ejecutar discover-pleno para regenerar el CSV derivado."
+        )
+        location = str(path)
+        if line_number is not None:
+            location = f"{location}:{line_number}"
+        super().__init__(f"Manifiesto JSONL invalido en {location}: {detail}. {self.recovery_hint}")
+
+
+class ManifestPersistError(OSError):
+    def __init__(self, *, path: Path, detail: str) -> None:
+        self.path = path
+        self.detail = detail
+        super().__init__(f"No se pudo persistir el manifiesto en {path}: {detail}")
+
+
+class _WritableTextFile(Protocol):
+    def write(self, content: str) -> int: ...
+
+    def flush(self) -> None: ...
+
+    def fileno(self) -> int: ...
 
 
 def manifest_from_discovery(
@@ -68,12 +108,56 @@ def load_manifest(path: Path) -> list[ManifestRecord]:
         return []
 
     records: list[ManifestRecord] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        payload = json.loads(line)
-        records.append(ManifestRecord(**payload))
+    saw_record = False
+    with path.open(encoding="utf-8") as file_handle:
+        for line_number, line in enumerate(file_handle, start=1):
+            if not line.strip():
+                continue
+            saw_record = True
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError as exc:
+                detail = f"JSON invalido en columna {exc.colno}: {exc.msg}"
+                raise ManifestLoadError(
+                    path=path,
+                    line_number=line_number,
+                    detail=detail,
+                ) from exc
+            records.append(
+                _manifest_record_from_payload(
+                    payload,
+                    path=path,
+                    line_number=line_number,
+                )
+            )
+    if not saw_record:
+        raise ManifestLoadError(
+            path=path,
+            detail="el archivo esta vacio o solo contiene espacios en blanco",
+        )
     return records
+
+
+def _manifest_record_from_payload(
+    payload: Any,
+    *,
+    path: Path,
+    line_number: int,
+) -> ManifestRecord:
+    if not isinstance(payload, dict):
+        raise ManifestLoadError(
+            path=path,
+            line_number=line_number,
+            detail=f"se esperaba un objeto JSON y se recibio {type(payload).__name__}",
+        )
+    try:
+        return ManifestRecord(**payload)
+    except TypeError as exc:
+        raise ManifestLoadError(
+            path=path,
+            line_number=line_number,
+            detail=f"payload invalido para ManifestRecord ({exc})",
+        ) from exc
 
 
 def reconcile_manifest_records(
@@ -184,18 +268,59 @@ def apply_download_results(
     return records
 
 
-def write_manifest_csv(records: list[ManifestRecord], path: Path) -> None:
+def _cleanup_staging_file(path: Path | None) -> None:
+    if path is None:
+        return
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        return
+
+
+def _write_manifest_atomic(
+    path: Path,
+    *,
+    newline: str | None,
+    write_contents: Callable[[_WritableTextFile], None],
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="") as file_handle:
+    staging_path: Path | None = None
+    try:
+        with NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            newline=newline,
+            dir=path.parent,
+            prefix=f".{path.name}.tmp-",
+            delete=False,
+        ) as file_handle:
+            staging_path = Path(file_handle.name)
+            write_contents(file_handle)
+            file_handle.flush()
+            os.fsync(file_handle.fileno())
+        os.replace(staging_path, path)
+    except OSError as exc:
+        _cleanup_staging_file(staging_path)
+        raise ManifestPersistError(path=path, detail=str(exc)) from exc
+    except Exception:
+        _cleanup_staging_file(staging_path)
+        raise
+
+
+def write_manifest_csv(records: list[ManifestRecord], path: Path) -> None:
+    def write_contents(file_handle: _WritableTextFile) -> None:
         writer = csv.DictWriter(file_handle, fieldnames=MANIFEST_FIELDS)
         writer.writeheader()
         for record in records:
             writer.writerow(record.to_dict())
 
+    _write_manifest_atomic(path, newline="", write_contents=write_contents)
+
 
 def write_manifest_jsonl(records: list[ManifestRecord], path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as file_handle:
+    def write_contents(file_handle: _WritableTextFile) -> None:
         for record in records:
             file_handle.write(json.dumps(record.to_dict(), ensure_ascii=False))
             file_handle.write("\n")
+
+    _write_manifest_atomic(path, newline=None, write_contents=write_contents)

@@ -3,8 +3,12 @@ from __future__ import annotations
 import json
 from hashlib import sha256
 
+import pytest
+
+from congreso_votaciones import services
 from congreso_votaciones.config import Settings
 from congreso_votaciones.manifest import (
+    ManifestLoadError,
     load_manifest,
     manifest_from_discovery,
     write_manifest_jsonl,
@@ -112,3 +116,54 @@ def test_discover_pleno_limit_preserves_existing_manifest_records(
     )
     assert preserved_after_limit.download_status == "downloaded"
     assert preserved_after_limit.sha256 == sha256(preserved_bytes).hexdigest()
+
+
+def test_download_pleno_logs_manifest_load_failure(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    settings = Settings.from_root(tmp_path, output_root=tmp_path / "data")
+    settings.ensure_directories()
+    settings.manifest_jsonl_path.write_text('{"record_id": "abc"}\n', encoding="utf-8")
+
+    with pytest.raises(ManifestLoadError) as exc_info:
+        download_pleno(settings)
+
+    assert str(settings.manifest_jsonl_path) in str(exc_info.value)
+    log_entries = [
+        json.loads(line) for line in settings.log_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert log_entries[-1]["event"] == "manifest_load_failed"
+    assert log_entries[-1]["command"] == "download-pleno"
+    assert log_entries[-1]["manifest_jsonl"] == str(settings.manifest_jsonl_path)
+
+
+def test_persist_manifest_prioritizes_jsonl_before_csv(
+    monkeypatch,
+    sample_record,
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    settings = Settings.from_root(tmp_path, output_root=tmp_path / "data")
+    settings.ensure_directories()
+    settings.manifest_csv_path.write_text("stale,csv\n", encoding="utf-8")
+    manifest_record = manifest_from_discovery(sample_record)
+    call_order: list[str] = []
+    original_write_manifest_jsonl = services.write_manifest_jsonl
+
+    def tracked_write_manifest_jsonl(records, path):  # type: ignore[no-untyped-def]
+        call_order.append("jsonl")
+        return original_write_manifest_jsonl(records, path)
+
+    def fail_write_manifest_csv(records, path):  # type: ignore[no-untyped-def]
+        del records
+        call_order.append("csv")
+        raise OSError(f"simulated csv failure for {path}")
+
+    monkeypatch.setattr(services, "write_manifest_jsonl", tracked_write_manifest_jsonl)
+    monkeypatch.setattr(services, "write_manifest_csv", fail_write_manifest_csv)
+
+    with pytest.raises(OSError) as exc_info:
+        services._persist_manifest([manifest_record], settings)
+
+    assert call_order == ["jsonl", "csv"]
+    assert str(settings.manifest_csv_path) in str(exc_info.value)
+    reloaded_manifest = load_manifest(settings.manifest_jsonl_path)
+    assert [record.record_id for record in reloaded_manifest] == [manifest_record.record_id]
+    assert settings.manifest_csv_path.read_text(encoding="utf-8") == "stale,csv\n"

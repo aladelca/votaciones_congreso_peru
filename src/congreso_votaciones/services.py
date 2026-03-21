@@ -13,6 +13,7 @@ from congreso_votaciones.fetch import (
 )
 from congreso_votaciones.logging_utils import log_event
 from congreso_votaciones.manifest import (
+    ManifestLoadError,
     apply_download_results,
     load_manifest,
     merge_discovery_with_manifest,
@@ -25,8 +26,22 @@ from congreso_votaciones.parse_index import parse_pleno_index
 
 
 def _persist_manifest(records: list[ManifestRecord], settings: Settings) -> None:
-    write_manifest_csv(records, settings.manifest_csv_path)
     write_manifest_jsonl(records, settings.manifest_jsonl_path)
+    write_manifest_csv(records, settings.manifest_csv_path)
+
+
+def _load_manifest_records(settings: Settings, *, command: str) -> list[ManifestRecord]:
+    try:
+        return load_manifest(settings.manifest_jsonl_path)
+    except ManifestLoadError as exc:
+        log_event(
+            settings,
+            "manifest_load_failed",
+            command=command,
+            manifest_jsonl=str(settings.manifest_jsonl_path),
+            error_message=str(exc),
+        )
+        raise
 
 
 def _load_cached_html(settings: Settings) -> tuple[str, str] | None:
@@ -106,7 +121,7 @@ def discover_pleno(
         expand_view_url=expand_view_url,
         limit=limit,
     )
-    existing_records = load_manifest(settings.manifest_jsonl_path)
+    existing_records = _load_manifest_records(settings, command="discover-pleno")
     merged_records = merge_discovery_with_manifest(
         discovered_records,
         existing_records,
@@ -202,7 +217,7 @@ def download_pleno(
     max_concurrency: int | None = None,
 ) -> ServiceResult:
     settings.ensure_directories()
-    records = load_manifest(settings.manifest_jsonl_path)
+    records = _load_manifest_records(settings, command="download-pleno")
     if not records:
         log_event(
             settings,

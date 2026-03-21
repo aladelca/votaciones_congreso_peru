@@ -6,6 +6,7 @@ from typing import Annotated
 import typer
 
 from congreso_votaciones.config import Settings
+from congreso_votaciones.manifest import ManifestLoadError
 from congreso_votaciones.models import CommandSummary
 from congreso_votaciones.services import discover_pleno, download_pleno, sync_pleno
 
@@ -59,6 +60,9 @@ def discover_pleno_command(
     settings = build_settings(output_root, max_concurrency)
     try:
         result = discover_pleno(settings, limit=limit, refresh_html=refresh_html)
+    except ManifestLoadError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
     except ValueError as exc:
         typer.echo(f"configuration-error: {exc}", err=True)
         raise typer.Exit(code=2) from exc
@@ -84,6 +88,9 @@ def download_pleno_command(
             retry_failed=retry_failed,
             max_concurrency=max_concurrency,
         )
+    except ManifestLoadError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
     except FileNotFoundError as exc:
         typer.echo(f"configuration-error: {exc}", err=True)
         raise typer.Exit(code=2) from exc
@@ -111,6 +118,9 @@ def sync_pleno_command(
             max_concurrency=max_concurrency,
             refresh_html=refresh_html,
         )
+    except ManifestLoadError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
     except ValueError as exc:
         typer.echo(f"configuration-error: {exc}", err=True)
         raise typer.Exit(code=2) from exc

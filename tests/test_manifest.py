@@ -2,10 +2,17 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import pytest
+
 from congreso_votaciones.manifest import (
+    ManifestLoadError,
+    ManifestPersistError,
+    load_manifest,
     manifest_from_discovery,
     merge_discovery_with_manifest,
     reconcile_manifest_records,
+    write_manifest_csv,
+    write_manifest_jsonl,
 )
 from congreso_votaciones.parse_index import build_record_id
 
@@ -66,3 +73,87 @@ def test_reconcile_manifest_marks_missing_download_as_pending(sample_record, tmp
 
     assert reconciled[0].download_status == "pending"
     assert reconciled[0].error_message is not None
+
+
+def test_load_manifest_fails_fast_on_malformed_json(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    manifest_path = tmp_path / "pleno_pdfs_index.jsonl"
+    manifest_path.write_text('{"record_id": "abc"\n', encoding="utf-8")
+
+    with pytest.raises(ManifestLoadError) as exc_info:
+        load_manifest(manifest_path)
+
+    message = str(exc_info.value)
+    assert str(manifest_path) in message
+    assert ":1" in message
+    assert "JSON invalido" in message
+    assert "manifiesto canonico" in message
+
+
+def test_load_manifest_fails_fast_on_invalid_manifest_payload(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    manifest_path = tmp_path / "pleno_pdfs_index.jsonl"
+    manifest_path.write_text('{"record_id": "abc"}\n', encoding="utf-8")
+
+    with pytest.raises(ManifestLoadError) as exc_info:
+        load_manifest(manifest_path)
+
+    message = str(exc_info.value)
+    assert str(manifest_path) in message
+    assert ":1" in message
+    assert "payload invalido" in message
+    assert "ManifestRecord" in message
+
+
+def test_load_manifest_rejects_blank_existing_file(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    manifest_path = tmp_path / "pleno_pdfs_index.jsonl"
+    manifest_path.write_text("\n \n", encoding="utf-8")
+
+    with pytest.raises(ManifestLoadError) as exc_info:
+        load_manifest(manifest_path)
+
+    assert "vacio" in str(exc_info.value)
+
+
+def test_write_manifest_jsonl_is_atomic_on_replace_failure(
+    monkeypatch,
+    sample_record,
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    manifest_path = tmp_path / "pleno_pdfs_index.jsonl"
+    manifest_path.write_text('{"stale": true}\n', encoding="utf-8")
+    manifest_record = manifest_from_discovery(sample_record)
+
+    def fail_replace(source, destination):  # type: ignore[no-untyped-def]
+        del source, destination
+        raise OSError("simulated replace failure")
+
+    monkeypatch.setattr("congreso_votaciones.manifest.os.replace", fail_replace)
+
+    with pytest.raises(ManifestPersistError) as exc_info:
+        write_manifest_jsonl([manifest_record], manifest_path)
+
+    assert str(manifest_path) in str(exc_info.value)
+    assert manifest_path.read_text(encoding="utf-8") == '{"stale": true}\n'
+    assert list(manifest_path.parent.glob(f".{manifest_path.name}.tmp-*")) == []
+
+
+def test_write_manifest_csv_is_atomic_on_replace_failure(
+    monkeypatch,
+    sample_record,
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    manifest_path = tmp_path / "pleno_pdfs_index.csv"
+    manifest_path.write_text("stale,csv\n", encoding="utf-8")
+    manifest_record = manifest_from_discovery(sample_record)
+
+    def fail_replace(source, destination):  # type: ignore[no-untyped-def]
+        del source, destination
+        raise OSError("simulated replace failure")
+
+    monkeypatch.setattr("congreso_votaciones.manifest.os.replace", fail_replace)
+
+    with pytest.raises(ManifestPersistError) as exc_info:
+        write_manifest_csv([manifest_record], manifest_path)
+
+    assert str(manifest_path) in str(exc_info.value)
+    assert manifest_path.read_text(encoding="utf-8") == "stale,csv\n"
+    assert list(manifest_path.parent.glob(f".{manifest_path.name}.tmp-*")) == []

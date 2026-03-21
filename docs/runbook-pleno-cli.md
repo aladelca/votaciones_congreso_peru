@@ -30,6 +30,7 @@ Flags operativas:
 - Obtiene la URL del `iframe`.
 - Construye la vista expandida `?OpenForm&ExpandView&Seq=1`.
 - Parsea el índice jerárquico y genera manifiestos `csv` y `jsonl`.
+- El archivo canónico es `data/manifests/pleno_pdfs_index.jsonl`; `pleno_pdfs_index.csv` es una exportación derivada para inspección manual.
 - Si se usa `--limit`, solo recorta los registros procesados en esta corrida; el manifiesto conserva entradas previas no redescubiertas.
 - No descarga PDFs.
 
@@ -84,8 +85,11 @@ Eventos actuales:
 - `download_completed`
 - `download_failed_record`
 - `download_missing_manifest`
+- `manifest_load_failed`
 
 Cada línea contiene `timestamp`, `event` y campos operativos como `command`, `limit`, `failed`, `manifest_jsonl` o `record_id`.
+
+Cuando el loader detecta un `jsonl` corrupto o inválido, el error menciona la ruta afectada y, si aplica, la línea fallida. El mensaje también recuerda que el JSONL es el manifiesto canónico y que el CSV se vuelve a generar a partir de ese archivo.
 
 ## Salida de consola esperada
 
@@ -152,6 +156,43 @@ Acción:
 ```bash
 uv run congreso-votaciones discover-pleno --output-root <path>
 uv run congreso-votaciones download-pleno --output-root <path>
+```
+
+### `error: Manifiesto JSONL inválido en ...`
+
+Causa:
+
+- `data/manifests/pleno_pdfs_index.jsonl` existe pero está truncado, vacío o contiene una línea JSON inválida.
+- El `payload` de una línea ya no coincide con el contrato esperado de `ManifestRecord`.
+
+Acción:
+
+1. Trata `pleno_pdfs_index.jsonl` como la fuente canónica y no intentes recuperar el estado desde el CSV.
+2. Mueve o corrige el JSONL corrupto.
+3. Regenera ambos manifiestos desde discovery.
+
+```bash
+mv -f data/manifests/pleno_pdfs_index.jsonl data/manifests/pleno_pdfs_index.jsonl.bak
+uv run congreso-votaciones discover-pleno --refresh-html --output-root <path>
+```
+
+Si necesitas conservar evidencia para diagnóstico, guarda también `data/logs/pleno_sync.log` antes de regenerar.
+
+### `error: No se pudo persistir el manifiesto en ...`
+
+Causa:
+
+- El proceso no pudo escribir o reemplazar el archivo destino en `data/manifests/`.
+- Si el error menciona `pleno_pdfs_index.csv`, el JSONL canónico puede haberse actualizado y el CSV haber quedado desfasado.
+
+Acción:
+
+1. Corrige la causa operativa: permisos, espacio en disco o bloqueo del archivo.
+2. Si falló `pleno_pdfs_index.jsonl`, el manifiesto anterior se conserva porque la escritura usa archivo temporal + `replace`; vuelve a ejecutar el comando luego de corregir el problema.
+3. Si falló `pleno_pdfs_index.csv`, toma el JSONL como fuente de verdad y vuelve a ejecutar `discover-pleno` o `sync-pleno` para regenerar la exportación derivada.
+
+```bash
+uv run congreso-votaciones discover-pleno --output-root <path>
 ```
 
 ### Discovery usa HTML viejo

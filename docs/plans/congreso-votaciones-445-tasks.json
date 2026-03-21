@@ -1,0 +1,114 @@
+{
+  "version": "1.0.0",
+  "generated_at": "2026-03-21T01:20:58Z",
+  "source_plan": "docs/plans/congreso-votaciones-445-plan.md",
+  "tasks": [
+    {
+      "id": "congreso-votaciones-445.1",
+      "title": "Codify malformed manifest contract and recovery path",
+      "goal": "Make malformed manifest input fail deterministically with operator-facing recovery guidance before atomic persistence changes land.",
+      "scope": [
+        "Define the canonical persisted source of truth between JSONL and CSV.",
+        "Surface malformed JSONL parse or validation failures with path and line context.",
+        "Document the operator recovery path for corrupted manifest state."
+      ],
+      "files": [
+        "src/congreso_votaciones/manifest.py",
+        "src/congreso_votaciones/services.py",
+        "docs/runbook-pleno-cli.md"
+      ],
+      "dependencies": [],
+      "skills": [],
+      "acceptance_criteria": [
+        "Malformed manifest input fails fast instead of being silently skipped or partially loaded.",
+        "The surfaced error identifies the manifest path and the failing line or validation context with an actionable recovery hint.",
+        "The runbook states which manifest artifact is canonical and what operators should do when corruption is detected."
+      ],
+      "tests": [
+        "uv run pytest tests/test_manifest.py tests/test_services.py"
+      ],
+      "docs": [
+        "docs/runbook-pleno-cli.md",
+        "docs/specs/perform-an-extensive-code-review-20260321T010428Z-d6b4001d.md"
+      ],
+      "rollout": "Land before atomic persistence so later changes can target one documented contract.",
+      "observability": "Loader and service failures should mention the corrupted path without requiring debug mode.",
+      "status": "todo",
+      "priority": 2,
+      "owner": "Adrian Alarcon",
+      "notes": "Assumption: JSONL remains the canonical manifest because runtime only reads manifest_jsonl_path today."
+    },
+    {
+      "id": "congreso-votaciones-445.2",
+      "title": "Implement atomic manifest writes for JSONL and CSV",
+      "goal": "Replace direct manifest writes with temp-file-plus-replace persistence that preserves canonical files across interruptions.",
+      "scope": [
+        "Add same-directory temp-file write helpers for JSONL and CSV outputs.",
+        "Update service persistence sequencing to align with the canonical-manifest contract.",
+        "Ensure failed writes do not leave partial canonical files behind."
+      ],
+      "files": [
+        "src/congreso_votaciones/manifest.py",
+        "src/congreso_votaciones/services.py"
+      ],
+      "dependencies": [
+        "congreso-votaciones-445.1"
+      ],
+      "skills": [],
+      "acceptance_criteria": [
+        "Manifest JSONL and CSV writes use temp-file-plus-replace semantics in the target directory.",
+        "A write failure does not leave a truncated canonical manifest file at either persisted path.",
+        "Service-level persistence sequencing follows the documented canonical-manifest contract."
+      ],
+      "tests": [
+        "uv run pytest tests/test_manifest.py tests/test_services.py"
+      ],
+      "docs": [
+        "docs/specs/perform-an-extensive-code-review-20260321T010428Z-d6b4001d.md"
+      ],
+      "rollout": "Land after the loader contract is explicit so persistence ordering matches the documented recovery model.",
+      "observability": "Persistence failures should be attributable to the specific target path that could not be committed.",
+      "status": "todo",
+      "priority": 2,
+      "owner": "Adrian Alarcon",
+      "notes": "Implementation should minimize CSV/JSONL drift while prioritizing correctness of the canonical JSONL manifest."
+    },
+    {
+      "id": "congreso-votaciones-445.3",
+      "title": "Add manifest persistence regression coverage and operator guidance",
+      "goal": "Lock in the corruption contract and atomic persistence behavior with focused tests and runbook updates.",
+      "scope": [
+        "Add tests for malformed JSONL input and interrupted or failed persistence commits.",
+        "Verify service flows preserve canonical manifest state after failure scenarios.",
+        "Update operator documentation for corruption detection and recovery."
+      ],
+      "files": [
+        "tests/test_manifest.py",
+        "tests/test_services.py",
+        "docs/runbook-pleno-cli.md"
+      ],
+      "dependencies": [
+        "congreso-votaciones-445.2"
+      ],
+      "skills": [],
+      "acceptance_criteria": [
+        "Automated tests cover malformed manifest input with the documented error contract.",
+        "Automated tests cover at least one interrupted or failed write path without leaving partial canonical state behind.",
+        "The runbook explains how operators detect, recover from, and re-run after manifest corruption or persistence failure."
+      ],
+      "tests": [
+        "uv run pytest tests/test_manifest.py tests/test_services.py"
+      ],
+      "docs": [
+        "docs/runbook-pleno-cli.md",
+        "docs/specs/perform-an-extensive-code-review-20260321T010428Z-d6b4001d.md"
+      ],
+      "rollout": "Complete this verification task before closing congreso-votaciones-445 or starting the dependent download-metadata work.",
+      "observability": "Document the expected operator-visible error text and recovery steps.",
+      "status": "todo",
+      "priority": 2,
+      "owner": "Adrian Alarcon",
+      "notes": "This task closes the loop between persistence semantics, user-facing guidance, and fixture-backed evidence."
+    }
+  ]
+}
