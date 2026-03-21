@@ -1,0 +1,43 @@
+**Assumption**
+
+The prompt does not include explicit user questions, so I’m treating bead `congreso-votaciones-445` as the implied question set. The blocker `congreso-votaciones-2gy` is already closed, so this persistence work can now be defined against the current canonical-manifest behavior.
+
+**Refined Questions**
+
+1. What concrete persistence hazards exist in the current implementation?
+2. What should “atomic manifest persistence” mean in this repo, given there are both `jsonl` and `csv` outputs?
+3. What is the right corruption-handling contract for malformed or partially written manifests?
+4. Where should that behavior live in the codebase?
+5. What tests are sufficient to prove the contract?
+
+**Answers**
+
+1. The current hazards are real and specific. [`load_manifest`](//Users/adrianalarcon/Documents/cibertec_2026/webscrapping/repo/congreso-votaciones/src/congreso_votaciones/manifest.py#L66) trusts every non-empty line and constructs `ManifestRecord` directly, so malformed JSON or schema drift will surface as raw exceptions without operator guidance. It also treats an existing empty file as “no records”, which is dangerous because an interrupted write could be misread as a valid empty manifest. On the write side, [`_persist_manifest`](//Users/adrianalarcon/Documents/cibertec_2026/webscrapping/repo/congreso-votaciones/src/congreso_votaciones/services.py#L27) rewrites both outputs in place through [`write_manifest_csv`](//Users/adrianalarcon/Documents/cibertec_2026/webscrapping/repo/congreso-votaciones/src/congreso_votaciones/manifest.py#L187) and [`write_manifest_jsonl`](//Users/adrianalarcon/Documents/cibertec_2026/webscrapping/repo/congreso-votaciones/src/congreso_votaciones/manifest.py#L196), so a crash can leave a truncated file or a new CSV paired with an old JSONL.
+
+2. “Atomic” should mean: after any interruption, each persisted manifest path is either the previous complete file or the new complete file, never a partial write. In this repo, the practical contract should be that `jsonl` is the canonical source of truth and `csv` is a derived export. That matches the current read path, because services load only the JSONL. Implementation-wise, write to a temp file in the same directory, flush, `fsync`, then `os.replace`. If you want crash durability rather than just replace atomicity, also do a best-effort parent-directory `fsync` on POSIX systems.
+
+3. The corruption contract should be fail-fast, not tolerant. I would define it as:
+   - Missing manifest path: return `[]`.
+   - Existing but empty or whitespace-only manifest: raise a custom `ManifestLoadError`.
+   - Malformed JSON line: raise `ManifestLoadError` with file path, line number, and a recovery hint.
+   - Record-shape/schema mismatch while constructing `ManifestRecord`: raise the same custom error with context.
+   Silent quarantine or row-skipping is the wrong tradeoff here because this file is the canonical inventory; tolerance would hide corruption and could cause silent record loss or incorrect reconciliation.
+
+4. The logic should live mostly in `manifest.py`. That module should own serialization, parsing, atomic-write helpers, and the custom exception type. `services.py` should remain orchestration-only: load the manifest, persist JSONL first, then persist CSV, and log failures with command/path context. If CSV fails after JSONL succeeds, surfacing an error is acceptable because the authoritative JSONL state is already safe and the CSV can be regenerated on the next successful run.
+
+5. The minimum useful tests are:
+   - Existing JSONL remains unchanged if the replace step fails during an attempted rewrite.
+   - Existing CSV remains unchanged under the same failure mode.
+   - Existing empty JSONL raises `ManifestLoadError` instead of returning `[]`.
+   - Truncated last-line JSONL raises `ManifestLoadError` with line context.
+   - `discover_pleno` and `download_pleno` surface manifest-load failures instead of continuing with empty state.
+   - A successful atomic rewrite still round-trips records correctly through `load_manifest`.
+
+**Recommended Next Steps**
+
+1. Make `jsonl` the documented canonical manifest and `csv` an explicitly derived export in `README.md` and `docs/runbook-pleno-cli.md`.
+2. Add `ManifestLoadError` plus line-aware validation in `src/congreso_votaciones/manifest.py`.
+3. Add one shared atomic-write helper in `src/congreso_votaciones/manifest.py` and route both writers through it.
+4. Keep `src/congreso_votaciones/services.py` simple: persist JSONL first, CSV second, and log manifest persistence/load failures explicitly.
+5. Add targeted regression coverage in `tests/test_manifest.py` and `tests/test_services.py` for empty, malformed, truncated, and replace-failure scenarios.
+6. Verify with `uv run pytest tests/test_manifest.py tests/test_services.py`, then `uv run ruff check` and `uv run mypy src` if implementation scope grows beyond those files.

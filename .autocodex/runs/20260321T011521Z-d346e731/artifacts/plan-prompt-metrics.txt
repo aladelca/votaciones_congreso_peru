@@ -1,0 +1,3 @@
+prompt_bytes=5329
+feedback_bytes=1617
+feedback_summary=memory_docs=4 events=11 artifacts=6 bytes=1617

@@ -1,0 +1,38 @@
+{
+  "run_id": "20260321T011521Z-d346e731",
+  "updated_at": "2026-03-21T01:17:21.650006Z",
+  "sources": [
+    "memory",
+    "events",
+    "artifacts"
+  ],
+  "last_prompt_summary": "memory_docs=4 events=11 artifacts=6 bytes=1617",
+  "memory_docs": [
+    "OPINIONS.md",
+    "PROGRESS.md",
+    "SPEC.md",
+    "TODO.md"
+  ],
+  "artifact_ids": [
+    "20260321T011521Z-d346e731:ideate-prompt-metrics.txt",
+    "20260321T011521Z-d346e731:ideate-stderr.txt",
+    "20260321T011521Z-d346e731:ideate-stdout.txt",
+    "20260321T011521Z-d346e731:ideate-final.txt",
+    "20260321T011521Z-d346e731:ideate-jsonl.txt",
+    "20260321T011521Z-d346e731:ideate.txt"
+  ],
+  "event_ids": [
+    "run-start-fa5f059f1641",
+    "thread-started-a415a2d4e50f",
+    "phase-start-413f1a3b90d8",
+    "turn-started-6d3d60c37b82",
+    "item-started-703a2b6e21ae",
+    "phase-complete-00c46b918d89",
+    "item-completed-e3412a5b6ba2",
+    "turn-completed-3cd046d4d7ee",
+    "phase-start-0a13b3d28c3a",
+    "turn-started-962fde26be1e",
+    "item-started-904edc879581"
+  ],
+  "bytes": 1617
+}

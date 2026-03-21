@@ -1,0 +1,160 @@
+{
+  "version": "1.0.0",
+  "generated_at": "2026-03-21T01:13:01Z",
+  "source_plan": "docs/plans/perform-an-extensive-code-review-20260321T010428Z-d6b4001d-plan.md",
+  "tasks": [
+    {
+      "id": "congreso-votaciones-2gy",
+      "title": "Prevent manifest truncation during limited or partial discovery",
+      "goal": "Preserve the canonical manifest inventory when discovery is intentionally limited or temporarily incomplete.",
+      "scope": [
+        "Define canonical-manifest behavior for discover-pleno and sync-pleno when --limit is used.",
+        "Preserve previously known records and their download state during partial rediscovery.",
+        "Add regression coverage for full-to-limited discovery sequences."
+      ],
+      "files": [
+        "src/congreso_votaciones/services.py",
+        "src/congreso_votaciones/manifest.py",
+        "tests/test_manifest.py",
+        "tests/test_services.py",
+        "tests/test_cli.py"
+      ],
+      "dependencies": [],
+      "skills": [],
+      "acceptance_criteria": [
+        "discover-pleno and sync-pleno preserve previously known manifest entries when --limit is used or discovery returns a temporary subset.",
+        "Regression tests cover a full discovery followed by a limited discovery without truncating canonical inventory.",
+        "Existing download state for unaffected records remains intact after reconciliation."
+      ],
+      "tests": [
+        "uv run pytest tests/test_manifest.py tests/test_services.py tests/test_cli.py"
+      ],
+      "docs": [
+        "docs/runbook-pleno-cli.md",
+        "docs/specs/perform-an-extensive-code-review-20260321T010428Z-d6b4001d.md"
+      ],
+      "rollout": "",
+      "observability": "",
+      "status": "todo",
+      "priority": 1,
+      "owner": "Adrian Alarcon",
+      "notes": "Assumption: --limit is an operator sampling/control surface and must not destructively rewrite the canonical manifest."
+    },
+    {
+      "id": "congreso-votaciones-445",
+      "title": "Make manifest persistence atomic and resilient to partial writes",
+      "goal": "Ensure manifest write and load paths are safe against interruption and malformed persisted state.",
+      "scope": [
+        "Implement temp-file-plus-replace persistence for JSONL and CSV outputs.",
+        "Define the corruption-handling contract for malformed manifest input.",
+        "Add tests that cover interrupted or malformed persistence scenarios."
+      ],
+      "files": [
+        "src/congreso_votaciones/manifest.py",
+        "src/congreso_votaciones/services.py",
+        "tests/test_manifest.py",
+        "tests/test_services.py"
+      ],
+      "dependencies": [
+        "congreso-votaciones-2gy"
+      ],
+      "skills": [],
+      "acceptance_criteria": [
+        "Manifest JSONL and CSV writes use a temp-file-plus-replace strategy so interrupted writes do not leave partial canonical files.",
+        "Malformed manifest input follows a documented error contract with actionable operator guidance and automated test coverage.",
+        "Tests prove manifest persistence remains consistent across write and load failure scenarios."
+      ],
+      "tests": [
+        "uv run pytest tests/test_manifest.py tests/test_services.py"
+      ],
+      "docs": [
+        "docs/runbook-pleno-cli.md",
+        "docs/specs/perform-an-extensive-code-review-20260321T010428Z-d6b4001d.md"
+      ],
+      "rollout": "Land after canonical inventory semantics are fixed so persistence safeguards align with the intended merge behavior.",
+      "observability": "",
+      "status": "todo",
+      "priority": 2,
+      "owner": "Adrian Alarcon",
+      "notes": ""
+    },
+    {
+      "id": "congreso-votaciones-1ez",
+      "title": "Capture HTTP failure metadata for failed PDF downloads",
+      "goal": "Persist actionable failure metadata so operators can distinguish HTTP, transport, and validation failures for PDF downloads.",
+      "scope": [
+        "Preserve HTTP status or transport classification on failure paths when available.",
+        "Extend persisted download metadata and logging as needed without regressing successful downloads.",
+        "Add failure-path tests for HTTP and non-HTTP errors."
+      ],
+      "files": [
+        "src/congreso_votaciones/download.py",
+        "src/congreso_votaciones/models.py",
+        "src/congreso_votaciones/manifest.py",
+        "src/congreso_votaciones/services.py",
+        "tests/test_download.py",
+        "tests/test_services.py"
+      ],
+      "dependencies": [
+        "congreso-votaciones-445"
+      ],
+      "skills": [],
+      "acceptance_criteria": [
+        "Failed downloads persist structured HTTP or transport metadata when available, not only a free-form error message.",
+        "Automated tests cover at least one HTTP failure path and one non-HTTP transport failure path.",
+        "Operator-facing logs or manifest fields allow distinguishing status-code failures from network or validation failures."
+      ],
+      "tests": [
+        "uv run pytest tests/test_download.py tests/test_services.py"
+      ],
+      "docs": [
+        "docs/runbook-pleno-cli.md",
+        "docs/specs/perform-an-extensive-code-review-20260321T010428Z-d6b4001d.md"
+      ],
+      "rollout": "",
+      "observability": "Download failures should remain queryable from manifest outputs and JSONL logs without inspecting stack traces.",
+      "status": "todo",
+      "priority": 2,
+      "owner": "Adrian Alarcon",
+      "notes": ""
+    },
+    {
+      "id": "congreso-votaciones-3gw",
+      "title": "Clarify or normalize missing parliamentary metadata in parsed records",
+      "goal": "Make the parser contract explicit for missing periodo_anual and legislatura values so downstream consumers can rely on it.",
+      "scope": [
+        "Choose between nullable output, deterministic backfill, or another documented policy.",
+        "Enforce the chosen behavior in parser logic and fixture-backed tests.",
+        "Document the contract for downstream consumers and operators."
+      ],
+      "files": [
+        "src/congreso_votaciones/parse_index.py",
+        "src/congreso_votaciones/models.py",
+        "tests/test_parse_index.py",
+        "docs/runbook-pleno-cli.md",
+        "README.md"
+      ],
+      "dependencies": [],
+      "skills": [],
+      "acceptance_criteria": [
+        "The data contract explicitly defines whether periodo_anual and legislatura are nullable or backfilled.",
+        "Parser behavior and fixtures are covered by tests for rows with missing hierarchy metadata.",
+        "User-facing documentation records the chosen policy so downstream consumers can rely on it."
+      ],
+      "tests": [
+        "uv run pytest tests/test_parse_index.py"
+      ],
+      "docs": [
+        "README.md",
+        "docs/runbook-pleno-cli.md",
+        "docs/specs/perform-an-extensive-code-review-20260321T010428Z-d6b4001d.md"
+      ],
+      "rollout": "",
+      "observability": "",
+      "status": "todo",
+      "priority": 3,
+      "owner": "Adrian Alarcon",
+      "notes": "Assumption: current fixture omissions may be source-authentic, so the contract must tolerate them unless the team decides on verified backfill rules."
+    }
+  ]
+}

@@ -1,0 +1,44 @@
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "congreso-votaciones"
+version = "0.1.0"
+description = "CLI para descubrir e ingestar PDFs de sesiones del Pleno del Congreso del Peru"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "beautifulsoup4>=4.12.3",
+  "httpx>=0.28.1",
+  "mypy>=1.15.0",
+  "pytest>=8.4.1",
+  "ruff>=0.12.10",
+  "typer>=0.16.1",
+]
+
+[project.scripts]
+congreso-votaciones = "congreso_votaciones.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/congreso_votaciones"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["congreso_votaciones"]
+
+[[tool.mypy.overrides]]
+module = ["bs4", "bs4.*"]
+ignore_missing_imports = true

@@ -1,0 +1,13 @@
+
+# Dolt database files (added by bd init)
+.dolt/
+*.db
+.venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+*.pyc
+data/raw/
+data/manifests/
+data/logs/
