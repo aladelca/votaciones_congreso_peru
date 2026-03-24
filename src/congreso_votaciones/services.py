@@ -1,7 +1,26 @@
 from __future__ import annotations
 
+from dataclasses import replace
+from datetime import UTC, datetime
+
+from congreso_votaciones.candidate_rows import extract_candidate_rows
 from congreso_votaciones.config import Settings
 from congreso_votaciones.download import download_records, select_download_candidates
+from congreso_votaciones.extraction_manifest import (
+    build_parse_manifest_record,
+    load_parse_manifest,
+    merge_parse_manifest,
+    write_parse_manifest,
+)
+from congreso_votaciones.extraction_models import (
+    DocumentExtraction,
+    ExtractedTextBlock,
+    ExtractionBackend,
+    ExtractionServiceResult,
+    ParseManifestRecord,
+    PdfDocumentProfile,
+    ProviderExtraction,
+)
 from congreso_votaciones.fetch import (
     build_client,
     build_expand_view_url,
@@ -23,6 +42,11 @@ from congreso_votaciones.manifest import (
 )
 from congreso_votaciones.models import CommandSummary, ManifestRecord, ServiceResult
 from congreso_votaciones.parse_index import parse_pleno_index
+from congreso_votaciones.parse_store import persist_document_artifacts, summarize_candidate_rows
+from congreso_votaciones.pdf_profile import profile_pdf
+from congreso_votaciones.providers.google_document_ai import extract_text_with_google_document_ai
+from congreso_votaciones.providers.native_pdf import extract_text_with_native_pdf
+from congreso_votaciones.section_parser import classify_page_text
 
 
 def _persist_manifest(records: list[ManifestRecord], settings: Settings) -> None:
@@ -78,6 +102,112 @@ def _build_summary(
         exit_code=exit_code,
         notes=[f"log_path={settings.log_path}"],
     )
+
+
+def _load_parse_manifest_records(settings: Settings) -> list[ParseManifestRecord]:
+    return load_parse_manifest(settings.parse_manifest_jsonl_path)
+
+
+def _select_extraction_candidates(
+    records: list[ManifestRecord],
+    existing_parse_records: list[ParseManifestRecord],
+    *,
+    limit: int | None,
+    record_id: str | None,
+    force: bool,
+) -> tuple[list[ManifestRecord], int]:
+    parse_records_by_id = {record.record_id: record for record in existing_parse_records}
+    eligible: list[ManifestRecord] = []
+    skipped = 0
+    for record in records:
+        if record.download_status != "downloaded":
+            skipped += 1
+            continue
+        if record_id is not None and record.record_id != record_id:
+            skipped += 1
+            continue
+        previous_parse = parse_records_by_id.get(record.record_id)
+        if (
+            not force
+            and previous_parse is not None
+            and previous_parse.extraction_status == "extracted"
+        ):
+            skipped += 1
+            continue
+        eligible.append(record)
+
+    if limit is not None:
+        skipped += max(0, len(eligible) - limit)
+        eligible = eligible[:limit]
+    return eligible, skipped
+
+
+def _select_page_extraction(
+    profile: PdfDocumentProfile,
+    native_result: ProviderExtraction,
+    google_result: ProviderExtraction | None,
+    *,
+    prefer_google: bool = False,
+) -> tuple[ProviderExtraction, ExtractionBackend]:
+    native_pages = {page.page_number: page for page in native_result.pages}
+    google_pages = {} if google_result is None else {
+        page.page_number: page for page in google_result.pages
+    }
+    native_blocks_by_page: dict[int, list[ExtractedTextBlock]] = {}
+    google_blocks_by_page: dict[int, list[ExtractedTextBlock]] = {}
+    for block in native_result.blocks:
+        native_blocks_by_page.setdefault(block.page_number, []).append(block)
+    if google_result is not None:
+        for block in google_result.blocks:
+            google_blocks_by_page.setdefault(block.page_number, []).append(block)
+
+    merged_pages = []
+    merged_blocks: list[ExtractedTextBlock] = []
+    page_backends: set[str] = set()
+    for page_profile in profile.pages:
+        page_number = page_profile.page_number
+        use_google = page_number in google_pages and (
+            prefer_google or page_profile.profile_class in {"image_only", "hybrid"}
+        )
+        selected_page = (
+            google_pages.get(page_number) if use_google else native_pages.get(page_number)
+        )
+        selected_blocks = (
+            google_blocks_by_page.get(page_number, [])
+            if use_google
+            else native_blocks_by_page.get(page_number, [])
+        )
+        if selected_page is None:
+            fallback_page = native_pages.get(page_number) or google_pages.get(page_number)
+            if fallback_page is None:
+                continue
+            selected_page = fallback_page
+            selected_blocks = native_blocks_by_page.get(page_number, []) or (
+                google_blocks_by_page.get(page_number, [])
+            )
+
+        section_type = classify_page_text(selected_page.text)
+        merged_pages.append(
+            replace(
+                selected_page,
+                section_type=section_type,
+                block_count=len(selected_blocks),
+            )
+        )
+        merged_blocks.extend(selected_blocks)
+        page_backends.add(selected_page.source_backend)
+
+    preferred_backend: ExtractionBackend = "native_pdf"
+    if page_backends == {"google_document_ai"}:
+        preferred_backend = "google_document_ai"
+    elif "google_document_ai" in page_backends and "native_pdf" in page_backends:
+        preferred_backend = "hybrid"
+
+    return ProviderExtraction(
+        provider_name=preferred_backend,
+        pages=merged_pages,
+        blocks=merged_blocks,
+    ), preferred_backend
 
 
 def discover_pleno(
@@ -269,3 +399,152 @@ def sync_pleno(
         notes=discovery.summary.notes + download.summary.notes,
     )
     return download
+
+
+def extract_pleno(
+    settings: Settings,
+    *,
+    limit: int | None = None,
+    record_id: str | None = None,
+    force: bool = False,
+    use_google: bool = True,
+    force_google: bool = False,
+) -> ExtractionServiceResult:
+    settings.ensure_directories()
+    log_event(
+        settings,
+        "extract_started",
+        command="extract-pleno",
+        limit=limit,
+        record_id=record_id,
+        force=force,
+        use_google=use_google,
+        force_google=force_google,
+    )
+
+    manifest_records = _load_manifest_records(settings, command="extract-pleno")
+    if not manifest_records:
+        raise FileNotFoundError(
+            "No existe manifiesto en "
+            f"{settings.manifest_jsonl_path}. Ejecuta discover-pleno y download-pleno primero."
+        )
+
+    parse_records = _load_parse_manifest_records(settings)
+    candidates, skipped = _select_extraction_candidates(
+        manifest_records,
+        parse_records,
+        limit=limit,
+        record_id=record_id,
+        force=force,
+    )
+
+    extracted_documents: list[DocumentExtraction] = []
+    updated_parse_records: list[ParseManifestRecord] = []
+    succeeded = 0
+    failed = 0
+
+    for record in candidates:
+        parse_record = next(
+            (candidate for candidate in parse_records if candidate.record_id == record.record_id),
+            build_parse_manifest_record(record),
+        )
+        parse_record.attempt_count += 1
+        pdf_path = settings.output_root / record.storage_relpath
+        try:
+            profile = profile_pdf(pdf_path, record_id=record.record_id)
+            native_result = extract_text_with_native_pdf(pdf_path, record_id=record.record_id)
+            google_result = None
+            should_call_google = use_google and (
+                force_google
+                or any(page.profile_class in {"image_only", "hybrid"} for page in profile.pages)
+            )
+            if should_call_google:
+                google_result = extract_text_with_google_document_ai(
+                    settings,
+                    pdf_path,
+                    record_id=record.record_id,
+                )
+
+            merged_result, preferred_backend = _select_page_extraction(
+                profile,
+                native_result,
+                google_result,
+                prefer_google=force_google,
+            )
+            candidate_rows = extract_candidate_rows(
+                record.record_id,
+                merged_result.pages,
+                merged_result.blocks,
+            )
+            extraction = DocumentExtraction(
+                record_id=record.record_id,
+                profile=profile,
+                preferred_backend=preferred_backend,
+                pages=merged_result.pages,
+                blocks=merged_result.blocks,
+                candidate_rows=candidate_rows,
+            )
+            output_relpath = persist_document_artifacts(settings, record, extraction)
+            parse_record.profile_class = profile.profile_class
+            parse_record.preferred_backend = preferred_backend
+            parse_record.extraction_status = "extracted"
+            parse_record.page_count = profile.page_count
+            parse_record.extracted_at = datetime.now(UTC).isoformat()
+            parse_record.error_message = None
+            parse_record.output_relpath = str(output_relpath)
+            extracted_documents.append(extraction)
+            updated_parse_records.append(parse_record)
+            succeeded += 1
+            log_event(
+                settings,
+                "extract_document_completed",
+                command="extract-pleno",
+                record_id=record.record_id,
+                preferred_backend=preferred_backend,
+                profile_class=profile.profile_class,
+                candidate_rows=summarize_candidate_rows(candidate_rows),
+                output_relpath=str(output_relpath),
+            )
+        except Exception as exc:  # noqa: BLE001
+            parse_record.extraction_status = "failed"
+            parse_record.error_message = str(exc)
+            updated_parse_records.append(parse_record)
+            failed += 1
+            log_event(
+                settings,
+                "extract_document_failed",
+                command="extract-pleno",
+                record_id=record.record_id,
+                error_message=str(exc),
+            )
+
+    merged_parse_manifest = merge_parse_manifest(parse_records, updated_parse_records)
+    write_parse_manifest(settings.parse_manifest_jsonl_path, merged_parse_manifest)
+    summary = CommandSummary(
+        command="extract-pleno",
+        processed=len(candidates),
+        succeeded=succeeded,
+        skipped=skipped,
+        failed=failed,
+        manifest_jsonl_path=settings.parse_manifest_jsonl_path,
+        exit_code=1 if failed else 0,
+        notes=[
+            f"processed_root={settings.processed_pleno_root}",
+            f"documentai_configured={settings.documentai_is_configured}",
+        ],
+    )
+    log_event(
+        settings,
+        "extract_completed",
+        command="extract-pleno",
+        processed=summary.processed,
+        succeeded=summary.succeeded,
+        skipped=summary.skipped,
+        failed=summary.failed,
+        parse_manifest_jsonl=str(settings.parse_manifest_jsonl_path),
+    )
+    return ExtractionServiceResult(
+        records=merged_parse_manifest,
+        summary=summary,
+        extracted_documents=extracted_documents,
+    )

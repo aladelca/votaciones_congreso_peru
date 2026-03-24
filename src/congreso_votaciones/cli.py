@@ -8,7 +8,7 @@ import typer
 from congreso_votaciones.config import Settings
 from congreso_votaciones.manifest import ManifestLoadError
 from congreso_votaciones.models import CommandSummary
-from congreso_votaciones.services import discover_pleno, download_pleno, sync_pleno
+from congreso_votaciones.services import discover_pleno, download_pleno, extract_pleno, sync_pleno
 
 app = typer.Typer(no_args_is_help=True)
 OUTPUT_ROOT_OPTION = typer.Option(help="Directorio raiz de data.")
@@ -25,6 +25,12 @@ DISCOVER_CONCURRENCY_OPTION = typer.Option(
     min=1,
     help="Compatibilidad de flags CLI.",
 )
+RECORD_ID_OPTION = typer.Option(help="Procesa un record_id especifico del manifiesto.")
+FORCE_OPTION = typer.Option(help="Reprocesa documentos ya extraidos.")
+USE_GOOGLE_OPTION = typer.Option(help="Usa Google Document AI cuando el PDF lo necesite.")
+FORCE_GOOGLE_OPTION = typer.Option(
+    help="Fuerza Google Document AI aun cuando el perfil del PDF sea native_text.",
+)
 
 
 def build_settings(output_root: Path | None, max_concurrency: int | None) -> Settings:
@@ -37,6 +43,10 @@ def build_settings(output_root: Path | None, max_concurrency: int | None) -> Set
 
 def render_summary(summary: CommandSummary) -> None:
     typer.echo(f"command: {summary.command}")
+    if summary.processed:
+        typer.echo(f"processed: {summary.processed}")
+    if summary.succeeded:
+        typer.echo(f"succeeded: {summary.succeeded}")
     typer.echo(f"discovered: {summary.discovered}")
     typer.echo(f"pending: {summary.pending}")
     typer.echo(f"downloaded: {summary.downloaded}")
@@ -122,6 +132,38 @@ def sync_pleno_command(
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     except ValueError as exc:
+        typer.echo(f"configuration-error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    except Exception as exc:  # noqa: BLE001
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    render_summary(result.summary)
+    raise typer.Exit(code=result.summary.exit_code)
+
+
+@app.command("extract-pleno")
+def extract_pleno_command(
+    output_root: Annotated[Path | None, OUTPUT_ROOT_OPTION] = None,
+    limit: Annotated[int | None, LIMIT_OPTION] = None,
+    record_id: Annotated[str | None, RECORD_ID_OPTION] = None,
+    force: Annotated[bool, FORCE_OPTION] = False,
+    use_google: Annotated[bool, USE_GOOGLE_OPTION] = True,
+    force_google: Annotated[bool, FORCE_GOOGLE_OPTION] = False,
+) -> None:
+    settings = build_settings(output_root, max_concurrency=None)
+    try:
+        result = extract_pleno(
+            settings,
+            limit=limit,
+            record_id=record_id,
+            force=force,
+            use_google=use_google,
+            force_google=force_google,
+        )
+    except ManifestLoadError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    except (FileNotFoundError, ValueError, ImportError) as exc:
         typer.echo(f"configuration-error: {exc}", err=True)
         raise typer.Exit(code=2) from exc
     except Exception as exc:  # noqa: BLE001

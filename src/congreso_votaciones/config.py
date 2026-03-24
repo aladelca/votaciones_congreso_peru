@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,6 +22,10 @@ class Settings:
     max_concurrency: int = 4
     user_agent: str = "congreso-votaciones/0.1 (+https://github.com/)"
     accept_header: str = "text/html,application/pdf,*/*"
+    google_cloud_project: str | None = None
+    google_cloud_location: str | None = None
+    documentai_processor_id: str | None = None
+    documentai_max_pages_per_request: int = 15
 
     @classmethod
     def from_root(
@@ -36,6 +41,12 @@ class Settings:
             project_root=resolved_root,
             output_root=resolved_output,
             max_concurrency=max_concurrency or 4,
+            google_cloud_project=os.getenv("GOOGLE_CLOUD_PROJECT"),
+            google_cloud_location=os.getenv("GOOGLE_CLOUD_LOCATION"),
+            documentai_processor_id=os.getenv("DOCUMENTAI_PROCESSOR_ID"),
+            documentai_max_pages_per_request=int(
+                os.getenv("DOCUMENTAI_MAX_PAGES_PER_REQUEST", "15")
+            ),
         )
 
     @property
@@ -62,6 +73,42 @@ class Settings:
     def log_path(self) -> Path:
         return self.output_root / "logs" / "pleno_sync.log"
 
+    @property
+    def processed_pleno_root(self) -> Path:
+        return self.output_root / "processed" / "pleno"
+
+    @property
+    def processed_intermediate_root(self) -> Path:
+        return self.processed_pleno_root / "intermediate"
+
+    @property
+    def processed_parsed_root(self) -> Path:
+        return self.processed_pleno_root / "parsed"
+
+    @property
+    def parse_manifest_jsonl_path(self) -> Path:
+        return self.output_root / "manifests" / "pleno_parse_manifest.jsonl"
+
+    @property
+    def reference_pleno_root(self) -> Path:
+        return self.output_root / "reference" / "pleno"
+
+    @property
+    def documentai_is_configured(self) -> bool:
+        return all(
+            (
+                self.google_cloud_project,
+                self.google_cloud_location,
+                self.documentai_processor_id,
+            )
+        )
+
+    @property
+    def documentai_endpoint(self) -> str:
+        if self.google_cloud_location is None:
+            raise ValueError("GOOGLE_CLOUD_LOCATION no esta configurado.")
+        return f"{self.google_cloud_location}-documentai.googleapis.com"
+
     def default_headers(self) -> dict[str, str]:
         return {
             "User-Agent": self.user_agent,
@@ -73,7 +120,11 @@ class Settings:
             self.public_page_path.parent,
             self.expanded_view_path.parent,
             self.pdf_root,
+            self.processed_intermediate_root,
+            self.processed_parsed_root,
             self.manifest_csv_path.parent,
+            self.parse_manifest_jsonl_path.parent,
             self.log_path.parent,
+            self.reference_pleno_root,
         ):
             path.mkdir(parents=True, exist_ok=True)

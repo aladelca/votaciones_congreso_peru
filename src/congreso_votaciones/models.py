@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Literal
 
 DownloadStatus = Literal["pending", "downloaded", "failed"]
+SourceLabel = str | None
 
 
 @dataclass(slots=True, frozen=True)
@@ -14,8 +15,8 @@ class PlenoPdfRecord:
     iframe_url: str
     expand_view_url: str
     periodo_parlamentario: str
-    periodo_anual: str
-    legislatura: str
+    periodo_anual: SourceLabel
+    legislatura: SourceLabel
     session_date_raw: str
     session_date_iso: str
     source_title: str
@@ -35,8 +36,8 @@ class ManifestRecord:
     iframe_url: str
     expand_view_url: str
     periodo_parlamentario: str
-    periodo_anual: str
-    legislatura: str
+    periodo_anual: SourceLabel
+    legislatura: SourceLabel
     session_date_raw: str
     session_date_iso: str
     source_title: str
@@ -76,6 +77,8 @@ class DownloadResult:
 class CommandSummary:
     command: str
     discovered: int = 0
+    processed: int = 0
+    succeeded: int = 0
     pending: int = 0
     downloaded: int = 0
     skipped: int = 0

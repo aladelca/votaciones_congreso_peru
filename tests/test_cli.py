@@ -89,3 +89,47 @@ def test_sync_cli_propagates_service_exit_code(monkeypatch, tmp_path) -> None:  
 
     assert result.exit_code == 1
     assert "command: sync-pleno" in result.stdout
+
+
+def test_extract_cli_invokes_service(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    captured: dict[str, object] = {}
+
+    def fake_extract(settings, *, limit, record_id, force, use_google, force_google):  # type: ignore[no-untyped-def]
+        captured["output_root"] = settings.output_root
+        captured["limit"] = limit
+        captured["record_id"] = record_id
+        captured["force"] = force
+        captured["use_google"] = use_google
+        captured["force_google"] = force_google
+        return ServiceResult(
+            records=[],
+            summary=CommandSummary(
+                command="extract-pleno",
+                processed=2,
+                succeeded=2,
+                manifest_jsonl_path=Path("data/manifests/pleno_parse_manifest.jsonl"),
+            ),
+        )
+
+    monkeypatch.setattr(cli, "extract_pleno", fake_extract)
+    result = runner.invoke(
+        cli.app,
+        [
+            "extract-pleno",
+            "--output-root",
+            str(tmp_path / "data"),
+            "--limit",
+            "2",
+            "--record-id",
+            "abc123",
+            "--force-google",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["limit"] == 2
+    assert captured["record_id"] == "abc123"
+    assert captured["use_google"] is True
+    assert captured["force_google"] is True
+    assert "processed: 2" in result.stdout
+    assert "succeeded: 2" in result.stdout
